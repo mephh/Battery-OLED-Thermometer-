@@ -1,0 +1,7 @@
+freertos.c:82:6:vApplicationStackOverflowHook	24	static
+freertos.c:99:6:vApplicationGetIdleTaskMemory	24	static
+freertos.c:113:6:MX_FREERTOS_Init	136	static
+freertos.c:169:6:InitDevices_task	24	static
+freertos.c:202:6:ReadSHT_task	16	static
+freertos.c:224:6:DisplayData_task	48	static
+freertos.c:260:6:StoreSD_task	16	static
