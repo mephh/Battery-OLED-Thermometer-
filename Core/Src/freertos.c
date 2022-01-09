@@ -30,6 +30,13 @@
 #include "ssd1306_fonts.h"
 #include "i2c.h"
 #include "sht3x.h"
+#include "usart.h"
+#include <stdbool.h>
+
+#include "fatfs.h"
+#include <stdio.h>
+#include <string.h>
+#include <stdarg.h> //for va_list var arg functions
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -51,18 +58,27 @@
 /* USER CODE BEGIN Variables */
 float temp, hum;
 
-sht3x_handle_t handle = { .i2c_handle = &hi2c3, .device_address =
+sht3x_handle_t handle = { .i2c_handle = &hi2c1, .device_address =
 		SHT3X_I2C_DEVICE_ADDRESS_ADDR_PIN_LOW };
+
+FATFS FatFs; 	//Fatfs handle
+FIL fil; 		//File handle
+FRESULT fres; //Result after operations
+char logfileName[] = "LOGDATA.TXT";
 /* USER CODE END Variables */
 osThreadId InitDevicesTaskHandle;
 osThreadId ReadSHTTaskHandle;
 osThreadId DisplayDataTaskHandle;
 osThreadId StoreSDHandle;
 osSemaphoreId i2cSemHandle;
+osSemaphoreId spiSemHandle;
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
-
+void myprintf(const char *fmt, ...);
+void GetSdProperties(void);
+void CreateSDCardLogFile(void);
+void UpdateLogFile(void);
 /* USER CODE END FunctionPrototypes */
 
 void InitDevices_task(void const * argument);
@@ -84,11 +100,113 @@ void vApplicationStackOverflowHook(xTaskHandle xTask, signed char *pcTaskName) {
 	 configCHECK_FOR_STACK_OVERFLOW is defined to 1 or 2. This hook function is
 	 called if a stack overflow is detected. */
 	for (int var = 0; var < 20; ++var) {
-					HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_SET);
-					osDelay(900);
-					HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_RESET);
-					osDelay(900);
-				}
+		HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_SET);
+		osDelay(2000);
+		HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_RESET);
+		osDelay(2000);
+	}
+}
+
+void myprintf(const char *fmt, ...) {
+	static char buffer[256];
+	va_list args;
+	va_start(args, fmt);
+	vsnprintf(buffer, sizeof(buffer), fmt, args);
+	va_end(args);
+
+	int len = strlen(buffer);
+	HAL_UART_Transmit(&huart2, (uint8_t*) buffer, len, -1);
+
+}
+
+void GetSdProperties(void) {
+	//some variables for FatFs
+	FATFS FatFs; 	//Fatfs handle
+	FIL fil; 		//File handle
+	FRESULT fres; //Result after operations
+
+	//Open the file system
+	fres = f_mount(&FatFs, "", 1); //1=mount now
+	if (fres != FR_OK) {
+		while (1) {
+			myprintf("f_mount error (%i)\r\n", fres);
+		}
+	}
+
+	//		//Let's get some statistics from the SD card
+	DWORD free_clusters, free_sectors, total_sectors;
+	FATFS *getFreeFs;
+	fres = f_getfree("", &free_clusters, &getFreeFs);
+	if (fres != FR_OK) {
+		while (1) {
+			myprintf("f_getfree error (%i)\r\n", fres);
+		}
+	}
+
+	//Formula comes from ChaN's documentation
+	total_sectors = (getFreeFs->n_fatent - 2) * getFreeFs->csize;
+	free_sectors = free_clusters * getFreeFs->csize;
+	myprintf(
+			"SD card stats:\r\n%10lu KiB total drive space.\r\n%10lu KiB available.\r\n",
+			total_sectors / 2, free_sectors / 2);
+}
+
+void CreateSDCardLogFile(void) {
+	//Open the file system
+	osSemaphoreWait(spiSemHandle, osWaitForever);
+	fres = f_mount(&FatFs, "/", 1); //1=mount now
+	if (fres != FR_OK) {
+		while (1) {
+			myprintf("f_mount error (%i)\r\n", fres);
+		}
+	}
+	//create file
+	fres = f_open(&fil, logfileName,
+			FA_WRITE | FA_OPEN_ALWAYS | FA_CREATE_ALWAYS);
+	if (fres == FR_OK) {
+		myprintf("I was able to open 'LogData.txt' for writing\r\n");
+	} else {
+		myprintf("f_open error during file creation (%i)\r\n", fres);
+	}
+
+	//Close your file!
+	f_close(&fil);
+	osSemaphoreRelease(spiSemHandle);
+}
+
+void UpdateLogFile(void) {
+	//some variables for FatFs
+
+	BYTE sensorData[30];
+	memset(sensorData, 0, sizeof sensorData);
+	UINT bytesWrote;
+	osSemaphoreWait(spiSemHandle, osWaitForever);
+	//store sht data
+	snprintf((char*) sensorData, sizeof(sensorData), "Temp:%.3f | Hum:%.3f\n",
+			temp, hum);
+	fres = f_mount(&FatFs, "/", 1); //1=mount now
+	if (fres != FR_OK) {
+//		while (1) {
+		myprintf("f_mount error (%i)\r\n", fres);
+//		}
+	}
+	fres = f_open(&fil, logfileName, FA_OPEN_APPEND | FA_WRITE);
+	if (fres != FR_OK) {
+		myprintf("can't open file to append. Err code:%i", fres);
+	}
+	myprintf("file to store in:%s", &logfileName);
+	fres = f_write(&fil, sensorData, 30, &bytesWrote);
+	if (fres == FR_OK) {
+		myprintf("Wrote %i bytes to 'logdata.txt'!\r\n", bytesWrote);
+	} else {
+		myprintf(
+				"f_write error during sht data storing (err code:%i | byteswritten:%i)\r\n",
+				fres, bytesWrote);
+	}
+	//Close your file!
+	f_close(&fil);
+
+	osSemaphoreRelease(spiSemHandle);
 }
 /* USER CODE END 4 */
 
@@ -124,6 +242,10 @@ void MX_FREERTOS_Init(void) {
   osSemaphoreDef(i2cSem);
   i2cSemHandle = osSemaphoreCreate(osSemaphore(i2cSem), 1);
 
+  /* definition and creation of spiSem */
+  osSemaphoreDef(spiSem);
+  spiSemHandle = osSemaphoreCreate(osSemaphore(spiSem), 1);
+
   /* USER CODE BEGIN RTOS_SEMAPHORES */
 	/* add semaphores, ... */
   /* USER CODE END RTOS_SEMAPHORES */
@@ -138,7 +260,7 @@ void MX_FREERTOS_Init(void) {
 
   /* Create the thread(s) */
   /* definition and creation of InitDevicesTask */
-  osThreadDef(InitDevicesTask, InitDevices_task, osPriorityRealtime, 0, 128);
+  osThreadDef(InitDevicesTask, InitDevices_task, osPriorityRealtime, 0, 512);
   InitDevicesTaskHandle = osThreadCreate(osThread(InitDevicesTask), NULL);
 
   /* definition and creation of ReadSHTTask */
@@ -150,7 +272,7 @@ void MX_FREERTOS_Init(void) {
   DisplayDataTaskHandle = osThreadCreate(osThread(DisplayDataTask), NULL);
 
   /* definition and creation of StoreSD */
-  osThreadDef(StoreSD, StoreSD_task, osPriorityLow, 0, 256);
+  osThreadDef(StoreSD, StoreSD_task, osPriorityLow, 0, 1024);
   StoreSDHandle = osThreadCreate(osThread(StoreSD), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
@@ -171,23 +293,23 @@ void InitDevices_task(void const * argument)
   /* USER CODE BEGIN InitDevices_task */
 	/* Infinite loop */
 	for (;;) {
+		//init oled
 		HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_RESET);
 		ssd1306_Init();
-//		 Create the handle for the sensor.
+		//init sht31
 		if (!sht3x_init(&handle)) {
-		    printf("SHT3x access failed.\n\r");
-		    for (int var = 0; var < 50; ++var) {
+			myprintf("SHT3x access failed.\n\r");
+			for (int var = 0; var < 50; ++var) {
 				HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_SET);
 				osDelay(50);
 				HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_RESET);
 				osDelay(50);
 			}
+			//init sd card
+			GetSdProperties();
+			CreateSDCardLogFile();
 		}
-//		ssd1306_TestAll();
-//		ssd1306_Fill(0x00);
-//		osThreadSuspend(InitDevicesTaskHandle);
 		osThreadTerminate(InitDevicesTaskHandle);
-//    osDelay(1);
 	}
   /* USER CODE END InitDevices_task */
 }
@@ -226,25 +348,21 @@ void DisplayData_task(void const * argument)
   /* USER CODE BEGIN DisplayData_task */
 	char temp_text[11];
 	char hum_text[11];
-	uint8_t indx = 0;
+	bool pxl = 0;
 	/* Infinite loop */
 	for (;;) {
 		snprintf(temp_text, sizeof(temp_text), "Temp: %.2f", temp);
 		snprintf(hum_text, sizeof(hum_text), "Hum:  %.2f", hum);
 		osSemaphoreWait(i2cSemHandle, osWaitForever);
-		ssd1306_SetCursor(3, 3);
+		ssd1306_SetCursor(3, 10);
 		ssd1306_WriteString(temp_text, Font_11x18, White);
-		ssd1306_SetCursor(3, 45);
+		ssd1306_SetCursor(3, 35);
 		ssd1306_WriteString(hum_text, Font_11x18, White);
 		ssd1306_DrawRectangle(0, 1, 127, 63, White);
-		if (indx != 0){
-			ssd1306_DrawPixel(125, indx+4, Black);
-		}
-		ssd1306_DrawPixel(125, indx+5, White);
+		ssd1306_DrawPixel(125, 25, pxl);
 		ssd1306_UpdateScreen();
 		osSemaphoreRelease(i2cSemHandle);
-		indx++;
-		indx = indx%5;
+		pxl = !pxl;
 		osDelay(100);
 	}
   /* USER CODE END DisplayData_task */
@@ -252,19 +370,19 @@ void DisplayData_task(void const * argument)
 
 /* USER CODE BEGIN Header_StoreSD_task */
 /**
-* @brief Function implementing the StoreSD thread.
-* @param argument: Not used
-* @retval None
-*/
+ * @brief Function implementing the StoreSD thread.
+ * @param argument: Not used
+ * @retval None
+ */
 /* USER CODE END Header_StoreSD_task */
 void StoreSD_task(void const * argument)
 {
   /* USER CODE BEGIN StoreSD_task */
-  /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
+	/* Infinite loop */
+	for (;;) {
+		UpdateLogFile();
+		osDelay(10000);
+	}
   /* USER CODE END StoreSD_task */
 }
 

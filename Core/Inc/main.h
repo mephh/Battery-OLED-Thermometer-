@@ -68,8 +68,6 @@ void Error_Handler(void);
 #define SD_CS_GPIO_Port GPIOA
 #define SD_MISO_Pin GPIO_PIN_6
 #define SD_MISO_GPIO_Port GPIOA
-#define SHT_SCL_Pin GPIO_PIN_7
-#define SHT_SCL_GPIO_Port GPIOA
 #define OLED_SCL_Pin GPIO_PIN_9
 #define OLED_SCL_GPIO_Port GPIOA
 #define OLED_SDA_Pin GPIO_PIN_10
@@ -84,8 +82,6 @@ void Error_Handler(void);
 #define VCP_RX_GPIO_Port GPIOA
 #define LD3_Pin GPIO_PIN_3
 #define LD3_GPIO_Port GPIOB
-#define SHT_SDA_Pin GPIO_PIN_4
-#define SHT_SDA_GPIO_Port GPIOB
 /* USER CODE BEGIN Private defines */
 
 /* USER CODE END Private defines */
